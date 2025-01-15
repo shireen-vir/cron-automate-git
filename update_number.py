@@ -3,6 +3,8 @@ import os
 import random
 import subprocess
 from datetime import datetime
+import win32com.client
+import sys
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(script_dir)
@@ -75,37 +77,51 @@ def git_push():
         print(result.stderr)
 
 
-def update_cron_with_random_time():
-    # Generate random hour (0-23) and minute (0-59)
-    random_hour = random.randint(0, 23)
-    random_minute = random.randint(0, 59)
+def update_task_scheduler_with_random_time():
+    try:
+        # Generate random hour (0-23) and minute (0-59)
+        random_hour = random.randint(0, 23)
+        random_minute = random.randint(0, 59)
 
-    # Define the new cron job command
-    new_cron_command = f"{random_minute} {random_hour} * * * cd {script_dir} && python3 {os.path.join(script_dir, 'update_number.py')}\n"
+        # Get the current script path
+        script_path = os.path.join(script_dir, 'update_number.py')
 
-    # Get the current crontab
-    cron_file = "/tmp/current_cron"
-    os.system(
-        f"crontab -l > {cron_file} 2>/dev/null || true"
-    )  # Save current crontab, or create a new one if empty
+        # Create a Task Scheduler object
+        scheduler = win32com.client.Dispatch('Schedule.Service')
+        scheduler.Connect()
 
-    # Update the crontab file
-    with open(cron_file, "r") as file:
-        lines = file.readlines()
+        # Create a new task definition
+        task_def = scheduler.NewTask(0)
 
-    with open(cron_file, "w") as file:
-        for line in lines:
-            # Remove existing entry for `update_number.py` if it exists
-            if "update_number.py" not in line:
-                file.write(line)
-        # Add the new cron job at the random time
-        file.write(new_cron_command)
+        # Create a task trigger (daily at the random hour and minute)
+        trigger = task_def.Triggers.Create(1)  # 1 means daily trigger
+        trigger.StartBoundary = f"2025-01-16T{random_hour:02}:{random_minute:02}:00"  # Set for tomorrow at random time
 
-    # Load the updated crontab
-    os.system(f"crontab {cron_file}")
-    os.remove(cron_file)
+        # Create an action to run the script
+        exec_action = task_def.Actions.Create(0)  # 0 means "execute"
+        exec_action.Path = sys.executable  # Python executable
+        exec_action.Arguments = script_path  # Path to your script
 
-    print(f"Cron job updated to run at {random_hour}:{random_minute} tomorrow.")
+        # Set the task to run only if the user is logged in
+        task_def.Principal.UserId = "INTERACTIVE"
+        task_def.Principal.LogonType = 3  # Logon interactively
+
+        # Register the task in the Task Scheduler
+        rootFolder = scheduler.GetFolder("\\")
+        rootFolder.RegisterTaskDefinition(
+            "UpdateNumberTask",  # Name of the task
+            task_def,  # Task definition
+            6,  # Replace if exists
+            None,  # No password needed for "INTERACTIVE"
+            None,
+            3  # Logon type for interactively
+        )
+
+        print(f"Task scheduled to run at {random_hour}:{random_minute} tomorrow.")
+    except Exception as e:
+        print(f"Error while scheduling task: {e}")
+        if hasattr(e, 'args'):
+            print(f"Error args: {e.args}")
 
 
 def main():
@@ -115,7 +131,7 @@ def main():
         write_number(new_number)
         git_commit()
         git_push()
-        update_cron_with_random_time()
+        update_task_scheduler_with_random_time()
     except Exception as e:
         print(f"Error: {str(e)}")
         exit(1)
